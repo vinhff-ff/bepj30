@@ -1,0 +1,355 @@
+// Prisma schema - PostgreSQL
+// Cấu trúc: routes -> controllers -> services -> prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Phân quyền tài khoản
+enum UserRole {
+  ADMIN
+  MEMBER
+}
+
+// Tài khoản
+model User {
+  id        String   @id @default(uuid())
+  username  String   @unique @db.VarChar(50)
+  password  String   @db.VarChar(255) // luôn lưu dạng bcrypt hash, không bao giờ lưu plaintext
+  avatarUrl          String?
+  inventoryAvatarUrl String?
+  role               UserRole @default(MEMBER)
+  gender             String?  @db.VarChar(20) // "MALE" | "FEMALE" | "OTHER"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Ảnh thuộc nhật kí của tài khoản này
+  journalImages JournalImage[]
+
+  // Tủ đồ: mỗi dòng là một món đồ người chơi đã nhận được
+  items UserItem[]
+
+  // Kết quả làm bài thí nghiệm
+  lessonResults LessonResult[]
+
+  // Nhóm: làm chủ nhóm, thành viên, và các lời mời gửi/nhận
+  ownedGroups         Group[]            @relation("GroupOwner")
+  groupMemberships    GroupMember[]
+  sentInvitations     GroupInvitation[]  @relation("InvitationInviter")
+  receivedInvitations GroupInvitation[]  @relation("InvitationInvitee")
+
+  // Số xu của người chơi
+  coins               Int                @default(0)
+
+  // Chuỗi đăng nhập cá nhân
+  streak              Int                @default(0)
+  lastLoginDate       String?            @db.VarChar(10) // "YYYY-MM-DD"
+
+  // Điểm danh nhận xu hàng ngày
+  dailyCheckIns       DailyCheckIn[]
+
+  // Thưởng xu khi hoàn thành bài học (duy nhất 1 lần cho mỗi bài)
+  lessonRewards       UserLessonReward[]
+
+  // Bài viết tin tức do admin tạo
+  articles            Article[]          @relation("ArticleAuthor")
+
+  // Đơn hàng mua sắm vật phẩm
+  shopOrders          ShopOrder[]
+
+  @@index([createdAt])
+  @@map("users")
+}
+
+// Ảnh trong nhật kí: mỗi ảnh có một thời điểm chụp
+// Các trường khác (nội dung, địa điểm, mood...) sẽ bổ sung sau
+model JournalImage {
+  id         String   @id @default(uuid())
+  imageUrl   String   @db.VarChar(500)
+  capturedAt DateTime // thời gian chụp ảnh
+  userId     String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, capturedAt])
+  @@map("journal_images")
+}
+
+// Vai trò trong nhóm
+enum GroupMemberRole {
+  OWNER
+  MEMBER
+}
+
+// Trạng thái lời mời vào nhóm
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+// Nhóm bạn bè: mỗi nhóm có một chủ sở hữu, chủ là thành viên OWNER
+model Group {
+  id        String   @id @default(uuid())
+  name      String   @db.VarChar(100)
+  ownerId   String
+  streak    Int      @default(0)
+  lastStreakDate String? @db.VarChar(10) // "YYYY-MM-DD"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner       User             @relation("GroupOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members     GroupMember[]
+  invitations GroupInvitation[]
+
+  @@index([ownerId])
+  @@map("groups")
+}
+
+// Thành viên nhóm.
+// @@unique([userId]) là ràng buộc cứng: một người chỉ được ở trong một nhóm duy nhất,
+// backend kiểm tra trước để trả về thông báo rõ ràng thay vì lỗi trùng khóa.
+model GroupMember {
+  id       String          @id @default(uuid())
+  groupId  String
+  userId   String
+  role     GroupMemberRole @default(MEMBER)
+  joinedAt DateTime        @default(now())
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@unique([userId])
+  @@map("group_members")
+}
+
+// Lời mời vào nhóm, người nhận phải tự chấp nhận hoặc từ chối
+model GroupInvitation {
+  id          String           @id @default(uuid())
+  groupId     String
+  inviterId   String
+  inviteeId   String
+  status      InvitationStatus @default(PENDING)
+  createdAt   DateTime         @default(now())
+  respondedAt DateTime?
+
+  group   Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  inviter User  @relation("InvitationInviter", fields: [inviterId], references: [id], onDelete: Cascade)
+  invitee User  @relation("InvitationInvitee", fields: [inviteeId], references: [id], onDelete: Cascade)
+
+  // Một người chỉ có một lời mời đang chờ cho mỗi nhóm
+  @@unique([groupId, inviteeId])
+  @@index([inviteeId, status])
+  @@index([groupId])
+  @@map("group_invitations")
+}
+
+// Phòng: khung chơi. Chỉ admin được thêm/sửa/xoá tên và ảnh, người chơi chỉ xem.
+model Room {
+  id        String   @id @default(uuid())
+  name      String   @db.VarChar(100)
+  imageUrl  String?
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lessons Lesson[]
+
+  @@index([order, createdAt])
+  @@map("rooms")
+}
+
+// Bài học thuộc một phòng.
+// html là mã thuần do admin dán vào, frontend đưa vào iframe để chạy độc lập,
+// nhờ vậy script trong bài không đụng tới giao diện chung của trang.
+model Lesson {
+  id        String   @id @default(uuid())
+  roomId    String
+  name      String   @db.VarChar(150)
+  imageUrl  String?
+  html      String   @default("")
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // --- Bài học dạng plugin ---
+  // Bài học hand tracking không nhúng html vào DB mà trỏ tới 1 file độc lập
+  // trong public/lab-lessons/<slug>/index.html. Thêm bài mới chỉ cần thả file
+  // + thêm 1 dòng ở đây, không phải sửa code. Ba cột dưới null nghĩa là bài học
+  // cũ chạy theo kiểu html trong DB.
+  slug          String? @unique @db.VarChar(120)
+  path          String? @db.VarChar(300)
+  requiredSlots Json?
+  published     Boolean  @default(true)
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  // Kết quả của các lần chơi bài này
+  results LessonResult[]
+
+  // Thưởng xu cho người chơi hoàn thành bài này
+  rewards UserLessonReward[]
+
+  @@index([roomId, order, createdAt])
+  @@index([published, slug])
+  @@map("lessons")
+}
+
+// Một món đồ trong tủ của người chơi.
+// itemId là slug của đồ, trỏ tới catalog.json (public/items/catalog.json) và
+// file ảnh public/items/<itemId>.webp. DB chỉ giữ id, không lưu ảnh hay
+// metadata của đồ.
+model UserItem {
+  userId     String
+  itemId     String   @db.VarChar(80)
+  equipped   Boolean   @default(false)
+  obtainedAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, itemId])
+  @@index([userId, equipped])
+  @@map("user_items")
+}
+
+// Kết quả chơi một bài học thí nghiệm. result lưu JSON do bài học gửi lên,
+// bị giới hạn kích thước ở tầng service.
+model LessonResult {
+  id        String   @id @default(uuid())
+  userId    String
+  lessonId  String
+  result    Json
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@index([userId, lessonId])
+  @@index([userId, lessonId, createdAt])
+  @@map("lesson_results")
+}
+
+// Bài viết tin tức / báo chí. Chỉ admin có quyền tạo, sửa, xoá. Người dùng chỉ xem.
+model Article {
+  id          String   @id @default(uuid())
+  slug        String   @unique @db.VarChar(150)
+  title       String   @db.VarChar(255)
+  excerpt     String   @db.Text
+  content     String   @db.Text
+  coverImage  String?  @db.VarChar(500)
+  category    String   @default("TIN TỨC") @db.VarChar(50)
+  author      String   @default("Ban Biên Tập") @db.VarChar(100)
+  authorRole  String?  @db.VarChar(100)
+  publishedAt DateTime @default(now())
+  readTime    String?  @db.VarChar(50)
+  featured    Boolean  @default(false)
+  hot         Boolean  @default(false)
+  tier        Int      @default(3) // 1: Lớn nhất, 2: Bên cạnh (max 5), 3: Dưới cùng
+  tags        String[] @default([])
+  views       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  createdById String?
+  createdBy   User?    @relation("ArticleAuthor", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([tier, publishedAt])
+  @@index([category, publishedAt])
+  @@index([featured, publishedAt])
+  @@index([createdAt])
+  @@map("articles")
+}
+
+// Cấu hình tính năng Đăng nhập nhận xu (Admin có thể On/Off và set xu cho 7 ngày)
+model DailyRewardConfig {
+  id          String   @id @default("default")
+  enabled     Boolean  @default(true)
+  // Mảng xu thưởng 7 ngày [ngày 1, ngày 2, ..., ngày 7]
+  dayRewards  Json     @default("[1, 2, 3, 4, 5, 6, 7]")
+  updatedAt   DateTime @updatedAt
+  updatedById String?
+
+  @@map("daily_reward_configs")
+}
+
+// Lịch sử điểm danh nhận xu hàng ngày của người dùng
+model DailyCheckIn {
+  id        String   @id @default(uuid())
+  userId    String
+  dayIndex  Int      // 1 đến 7
+  coins     Int      // Số xu nhận được của ngày đó
+  date      String   @db.VarChar(10) // Định dạng "YYYY-MM-DD"
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([userId, createdAt])
+  @@map("daily_check_ins")
+}
+
+// Ghi nhận thưởng bài học: mỗi bài học chỉ nhận 1 xu duy nhất 1 lần
+model UserLessonReward {
+  id        String   @id @default(uuid())
+  userId    String
+  lessonId  String
+  coins     Int      @default(1)
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lessonId])
+  @@index([userId])
+  @@map("user_lesson_rewards")
+}
+
+// Sản phẩm trong Cửa hàng / Giỏ hàng
+model ShopItem {
+  id          String      @id @default(uuid())
+  name        String      @db.VarChar(120)
+  description String?     @db.Text
+  imageUrl    String      @db.VarChar(500)
+  coinPrice   Int         @default(0) // Giá tính bằng xu
+  isSpecial   Boolean     @default(false) // Đồ dùng đặc biệt: yêu cầu nhập thông tin liên lạc khi mua
+  stock       Int?        // Số lượng tồn kho, null là vô hạn
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  orders      ShopOrder[]
+
+  @@index([isActive, createdAt])
+  @@map("shop_items")
+}
+
+// Đơn hàng mua sắm vật phẩm bằng xu
+model ShopOrder {
+  id          String    @id @default(uuid())
+  userId      String
+  itemId      String
+  coinPrice   Int       // Số xu đã trừ của người dùng
+  isSpecial   Boolean   @default(false)
+  contactInfo String?   @db.VarChar(500) // Thông tin liên lạc (bắt buộc với đồ đặc biệt)
+  note        String?   @db.VarChar(500)
+  status      String    @default("PENDING") // PENDING, PROCESSING, COMPLETED, CANCELLED
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  item ShopItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@map("shop_orders")
+}
+
+

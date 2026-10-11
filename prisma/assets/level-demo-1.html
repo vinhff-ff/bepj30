@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cầm & Đổ Lọ Dung Dịch - Hand Tracking Demo</title>
+<style>
+  :root {
+    --bg: #0e0f12;
+    --panel: #1a1c22;
+    --accent: #5ec8ff;
+    --accent2: #ffb454;
+    --text: #e8eaed;
+    --glass: rgba(255,255,255,0.06);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .wrap {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 16px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.sub { color: #9aa0a6; font-size: 13px; margin: 0 0 14px; }
+  .stage {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4/3;
+    background: #000;
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid #2a2d34;
+  }
+  video, canvas.overlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    transform: scaleX(-1); /* mirror so it feels natural */
+  }
+  video { object-fit: cover; }
+  canvas.overlay { pointer-events: none; }
+  .status {
+    position: absolute;
+    top: 10px; left: 10px;
+    background: var(--glass);
+    backdrop-filter: blur(6px);
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #666; }
+  .dot.on { background: #4ade80; }
+  .controls {
+    display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;
+  }
+  button {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid #2a2d34;
+    padding: 10px 16px;
+    border-radius: 10px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:active { transform: scale(0.97); }
+  .hint { font-size: 12px; color: #9aa0a6; margin-top: 10px; line-height: 1.6; }
+  .hint b { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🧪 Thí Nghiệm: Đổ Bazơ Vào Cốc Axit (Phenolphtalein)</h1>
+  <p class="sub">Chụm ngón cái + ngón trỏ để "cầm" lọ, nghiêng bàn tay để đổ vào cốc bên phải — cốc sẽ dần chuyển hồng.</p>
+
+  <div class="stage" id="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay" class="overlay"></canvas>
+    <div class="status">
+      <div class="dot" id="dotHand"></div>
+      <span id="statusText">Đang tải mô hình...</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="btnStart">Bật camera</button>
+    <button id="btnReset">Reset thí nghiệm</button>
+  </div>
+
+  <div class="hint">
+    <b>Cầm:</b> chụm ngón cái + ngón trỏ ngay vị trí lọ dung dịch (bên trái cốc) rồi giữ.<br>
+    <b>Di chuyển:</b> khi đang cầm, kéo tay lại gần miệng cốc (khoanh tròn nét đứt).<br>
+    <b>Đổ:</b> nghiêng cổ tay trong lúc đang cầm và ở gần cốc, dung dịch sẽ nhỏ giọt vào cốc và cốc đổi màu dần.
+  </div>
+</div>
+
+<script type="module">
+import {
+  HandLandmarker,
+  FilesetResolver
+} from "/vendor/tasks-vision/vision_bundle.mjs";
+
+const video = document.getElementById("video");
+const overlay = document.getElementById("overlay");
+const ctx = overlay.getContext("2d");
+const statusText = document.getElementById("statusText");
+const dotHand = document.getElementById("dotHand");
+const btnStart = document.getElementById("btnStart");
+const btnReset = document.getElementById("btnReset");
+const stage = document.getElementById("stage");
+
+let handLandmarker = null;
+let running = false;
+
+// vial state
+let vial = {
+  x: 0.25, y: 0.35,     // normalized 0..1 (in video space, before mirroring)
+  angle: 0,             // radians, 0 = upright
+  grabbed: false,
+  liquid: 100           // %
+};
+let drops = []; // pouring particles
+
+// fixed receiving beaker (acid, colorless -> turns pink as base is poured in)
+const beaker = { x: 0.72, y: 0.62, radius: 0.14, colorMix: 0, capacity: 0 };
+const COLOR_EMPTY = [30, 34, 42];     // matches --bg-ish, "clear acid"
+const COLOR_FULL  = [255, 105, 180];  // pink (phenolphthalein endpoint)
+
+function lerpColor(a, b, t) {
+  return a.map((v, i) => Math.round(v + (b[i] - v) * t));
+}
+
+// Nut chi bat duoc khi mo hinh da tai xong. Bam som truoc do se lam
+// handLandmarker con null va vong lap die ngay.
+btnStart.disabled = true;
+statusText.textContent = "Dang tai mo hinh nhan dang...";
+
+async function initModel() {
+  const fileset = await FilesetResolver.forVisionTasks(
+    "/vendor/tasks-vision/wasm"
+  );
+  handLandmarker = await HandLandmarker.createFromOptions(fileset, {
+    baseOptions: {
+      // Model nam san trong public/models cua frontend, khong tai tu mang ngoai
+      modelAssetPath: "/models/hand_landmarker.task",
+      delegate: "GPU"
+    },
+    runningMode: "VIDEO",
+    numHands: 1
+  });
+  btnStart.disabled = false;
+  statusText.textContent = "Sẵn sàng - bấm Bật camera";
+}
+
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480 },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    resizeCanvas();
+    running = true;
+    statusText.textContent = "Đang theo dõi tay...";
+    requestAnimationFrame(loop);
+  } catch (e) {
+    statusText.textContent = "Không mở được camera: " + e.message;
+  }
+}
+
+function resizeCanvas() {
+  overlay.width = stage.clientWidth;
+  overlay.height = stage.clientHeight;
+}
+window.addEventListener("resize", resizeCanvas);
+
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function loop() {
+  if (!running) return;
+
+  // Cho trong ra luot ve cuoi du co loi: mot frame hong khong duoc lam vong lap
+  // chet ngay. Neu khong, chi mot lan loi la bai hoac hong chay.
+  try {
+    if (handLandmarker === null) {
+      updatePhysicsAndDraw();
+      requestAnimationFrame(loop);
+      return;
+    }
+
+    const now = performance.now();
+    const result = handLandmarker.detectForVideo(video, now);
+
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+    let handFound = false;
+
+    if (result.landmarks && result.landmarks.length > 0) {
+      handFound = true;
+      const lm = result.landmarks[0];
+      const thumbTip = lm[4];
+      const indexTip = lm[8];
+      const wrist = lm[0];
+      const middleBase = lm[9];
+
+      const pinchDist = dist(thumbTip, indexTip);
+      const pinchPoint = {
+        x: (thumbTip.x + indexTip.x) / 2,
+        y: (thumbTip.y + indexTip.y) / 2
+      };
+
+      // tilt angle: vector wrist -> middle base, relative to vertical
+      const dx = middleBase.x - wrist.x;
+      const dy = middleBase.y - wrist.y;
+      const tiltAngle = Math.atan2(dx, -dy); // 0 when hand points straight up
+
+      const isPinching = pinchDist < 0.06;
+
+      // grab logic: pinch near vial's current position, or already grabbed
+      const nearVial = dist(pinchPoint, vial) < 0.12;
+
+      if (isPinching && (nearVial || vial.grabbed)) {
+        vial.grabbed = true;
+        vial.x = pinchPoint.x;
+        vial.y = pinchPoint.y;
+        vial.angle = tiltAngle;
+      } else {
+        vial.grabbed = false;
+        vial.angle *= 0.9; // ease back upright when released
+      }
+
+      drawHandDots(lm);
+    } else {
+      vial.grabbed = false;
+    }
+
+    dotHand.classList.toggle("on", handFound);
+    statusText.textContent = handFound
+      ? (vial.grabbed ? "Đang cầm lọ" : "Đưa ngón tay lại gần lọ để cầm")
+      : "Không thấy tay - đưa tay vào khung hình";
+
+      updatePhysicsAndDraw();
+  } catch (err) {
+    statusText.textContent = "Lỗi khi theo dõi tay: " + err.message;
+    running = false;
+    return;
+  }
+
+  requestAnimationFrame(loop);
+}
+
+function drawHandDots(lm) {
+  ctx.save();
+  ctx.fillStyle = "rgba(94,200,255,0.85)";
+  [4, 8].forEach(i => {
+    const p = lm[i];
+    ctx.beginPath();
+    ctx.arc(p.x * overlay.width, p.y * overlay.height, 6, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.restore();
+}
+
+function drawBeaker(bx, by, br) {
+  const t = Math.min(1, beaker.colorMix);
+  const fillColor = lerpColor(COLOR_EMPTY, COLOR_FULL, t);
+  ctx.save();
+  ctx.strokeStyle = "#5ec8ff88";
+  ctx.setLineDash([6, 5]);
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(bx, by, br, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // liquid inside beaker, rises with fill amount
+  const fillLevel = Math.min(1, beaker.capacity / 100);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(bx, by, br - 4, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.fillStyle = `rgba(${fillColor[0]},${fillColor[1]},${fillColor[2]},0.75)`;
+  ctx.fillRect(bx - br, by + br - (br * 2 * fillLevel), br * 2, br * 2 * fillLevel);
+  ctx.restore();
+
+  ctx.fillStyle = "#e8eaed";
+  ctx.font = "11px sans-serif";
+  ctx.save();
+  ctx.scale(-1, 1);
+  ctx.fillText("Cốc axit", -bx - 18, by - br - 8);
+  ctx.restore();
+  ctx.restore();
+}
+
+// Báo hoàn thành màn cho trang chủ, trang chủ sẽ gọi API cấp đồ.
+// Bài học tự báo lúc thật sự rót xong chứ không có nút bấm giả.
+let completionReported = false;
+
+function reportComplete() {
+  if (completionReported) return;
+  completionReported = true;
+// Bài học nằm trong iframe srcdoc bị sandbox nên location.origin là "null",
+  // truyền nó vào postMessage sẽ ném lỗi. Dùng "*" ở đây là an toàn: trang chủ
+  // kiểm tra event.origin và event.source trước khi gọi API.
+    try {
+    parent.postMessage({ type: "LESSON_COMPLETE", score: 100 }, "*");
+  } catch (err) {
+    // Bài học mở trực tiếp ngoài player thì không có parent để báo, coi như bỏ qua
+  }
+}
+
+function updatePhysicsAndDraw() {
+  const w = overlay.width, h = overlay.height;
+  const px = vial.x * w;
+  const py = vial.y * h;
+  const bx = beaker.x * w;
+  const by = beaker.y * h;
+  const br = beaker.radius * w;
+
+  drawBeaker(bx, by, br);
+
+  // tilt threshold + must be near the beaker to pour into it
+  const tiltDeg = Math.abs(vial.angle * 180 / Math.PI);
+  const nearBeaker = Math.hypot(px - bx, py - by) < br * 1.8;
+  const pouring = vial.grabbed && tiltDeg > 45 && vial.liquid > 0 && nearBeaker;
+
+  if (pouring) {
+    vial.liquid = Math.max(0, vial.liquid - 0.4);
+    beaker.capacity = Math.min(100, beaker.capacity + 0.4);
+    beaker.colorMix = Math.min(1, beaker.colorMix + 0.006);
+    if (Math.random() < 0.6) {
+      drops.push({
+        x: px + Math.sin(vial.angle) * 40,
+        y: py + 30,
+        targetY: by,
+        vy: 1 + Math.random() * 1.5,
+        life: 40
+      });
+    }
+  }
+
+  // Rót đầy bình là xong màn
+  if (beaker.capacity >= 99.5) {
+    reportComplete();
+  }
+
+  // draw vial (simple bottle shape) rotated by angle
+  ctx.save();
+  ctx.translate(px, py);
+  ctx.rotate(vial.angle);
+
+  // if not grabbed, draw at rest position without hand offset styling change
+  const bodyW = 46, bodyH = 70, neckW = 16, neckH = 18;
+
+  // liquid fill level inside body
+  const fillRatio = vial.liquid / 100;
+  const liquidH = bodyH * fillRatio;
+
+  ctx.fillStyle = vial.grabbed ? "rgba(255,180,84,0.15)" : "rgba(255,255,255,0.08)";
+  ctx.strokeStyle = vial.grabbed ? "#ffb454" : "#5ec8ff";
+  ctx.lineWidth = 2;
+
+  // body outline
+  ctx.beginPath();
+  ctx.moveTo(-bodyW/2, -bodyH/2);
+  ctx.lineTo(-bodyW/2, bodyH/2 - 8);
+  ctx.quadraticCurveTo(-bodyW/2, bodyH/2, -bodyW/2 + 8, bodyH/2);
+  ctx.lineTo(bodyW/2 - 8, bodyH/2);
+  ctx.quadraticCurveTo(bodyW/2, bodyH/2, bodyW/2, bodyH/2 - 8);
+  ctx.lineTo(bodyW/2, -bodyH/2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // liquid
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(-bodyW/2, bodyH/2 - liquidH, bodyW, liquidH);
+  ctx.clip();
+  ctx.fillStyle = "#5ec8ffcc";
+  ctx.fillRect(-bodyW/2, -bodyH/2, bodyW, bodyH);
+  ctx.restore();
+
+  // neck
+  ctx.beginPath();
+  ctx.rect(-neckW/2, -bodyH/2 - neckH, neckW, neckH);
+  ctx.fillStyle = vial.grabbed ? "rgba(255,180,84,0.15)" : "rgba(255,255,255,0.08)";
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.restore();
+
+  // draw drops (world space, not rotated with vial)
+  drops.forEach(d => {
+    d.y += d.vy;
+    d.life -= 1;
+    ctx.beginPath();
+    ctx.fillStyle = "rgba(94,200,255," + Math.max(0, d.life/40) + ")";
+    ctx.arc(d.x, d.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  drops = drops.filter(d => d.life > 0);
+
+  // label
+  ctx.fillStyle = "#e8eaed";
+  ctx.font = "11px sans-serif";
+  ctx.save();
+  ctx.scale(-1, 1); // undo mirror so text reads correctly
+  ctx.fillText(Math.round(vial.liquid) + "%", -px - 14, py - 45);
+  ctx.restore();
+}
+
+btnStart.addEventListener("click", () => {
+  if (!running) startCamera();
+});
+btnReset.addEventListener("click", () => {
+  vial = { x: 0.25, y: 0.35, angle: 0, grabbed: false, liquid: 100 };
+  beaker.colorMix = 0;
+  beaker.capacity = 0;
+  drops = [];
+});
+
+initModel().catch((err) => {
+  // Khong bat duoc mo hinh thi bao ro thay vi bo cam, nguoi hoc biet nguyen nhan
+  btnStart.disabled = true;
+  statusText.textContent = "Khong tai duoc mo hinh: " + err.message;
+  console.error("[mau 1] loi tai mo hinh", err);
+});
+</script>
+</body>
+</html>
