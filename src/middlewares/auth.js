@@ -24,7 +24,11 @@ function requireAuth(req, res, next) {
 
   try {
     const payload = verifyToken(token);
-    req.user = { id: payload.sub, role: payload.role };
+    const userId = payload.sub || payload.id || payload.userId;
+    if (!userId) {
+      return next(AppError.unauthorized("Token không hợp lệ", "INVALID_TOKEN"));
+    }
+    req.user = { id: userId, role: payload.role };
     return next();
   } catch (err) {
     // Đẩy xuống errorHandler để lỗi token hết hạn/sai đều ra code đúng
@@ -50,4 +54,26 @@ function requireRole(...allowedRoles) {
   };
 }
 
-module.exports = { requireAuth, requireUser, requireRole };
+// Không bắt buộc có token, nhưng nếu có thì giải mã và gán req.user
+function optionalAuth(req, res, next) {
+  const token = extractBearerToken(req);
+  if (!token) {
+    return next();
+  }
+
+  try {
+    const payload = verifyToken(token);
+    const userId = payload.sub || payload.id || payload.userId;
+    if (userId) {
+      req.user = { id: userId, role: payload.role };
+    }
+  } catch {
+    // Bỏ qua lỗi token hết hạn/sai khi gọi endpoint public
+  }
+
+  return next();
+}
+
+module.exports = { requireAuth, requireUser, requireRole, optionalAuth };
+
+

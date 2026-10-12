@@ -28,9 +28,9 @@ const itemSchema = z.object({
   scale: z.number().positive().max(4).optional(),
   offsetX: z.number().min(-100).max(100).optional(),
   offsetY: z.number().min(-100).max(100).optional(),
-  // id của bài học mở khoá món đồ này. Id bài học trong DB là UUID dạng
-  // chuỗi nên ở đây cũng là chuỗi, ví dụ "level-demo-1".
-  unlockedBy: z.string().min(1),
+  // id của bài học mở khoá món đồ này (có thể để rỗng nếu nhận từ cửa hàng)
+  unlockedBy: z.string().optional().default(""),
+  ext: z.string().optional(),
 });
 
 const catalogSchema = z.record(z.string(), itemSchema);
@@ -88,8 +88,8 @@ function readCatalogFile() {
         scale: meta.scale ?? def.scale,
         offsetX: meta.offsetX ?? def.offsetX,
         offsetY: meta.offsetY ?? def.offsetY,
-        image: itemImageName(id),
-        unlockedBy: meta.unlockedBy,
+        image: meta.ext ? `${id}.${meta.ext}` : itemImageName(id),
+        unlockedBy: meta.unlockedBy || "",
       },
     ];
   });

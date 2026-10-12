@@ -7,6 +7,7 @@ async function listItems(req, res) {
     const items = await shopService.getItems({
       includeInactive,
       search: req.query.search,
+      userId: req.user?.id,
     });
     return sendSuccess(res, items, "Lấy danh sách sản phẩm thành công");
   } catch (error) {
@@ -14,9 +15,18 @@ async function listItems(req, res) {
   }
 }
 
+async function getAvailableAssets(req, res) {
+  try {
+    const assets = shopService.getAvailableAssets();
+    return sendSuccess(res, assets, "Lấy danh sách vật phẩm có sẵn thành công");
+  } catch (error) {
+    return sendError(res, error);
+  }
+}
+
 async function getItem(req, res) {
   try {
-    const item = await shopService.getItemById(req.params.id);
+    const item = await shopService.getItemById(req.params.id, req.user?.id);
     return sendSuccess(res, item, "Lấy thông tin sản phẩm thành công");
   } catch (error) {
     return sendError(res, error);
@@ -103,6 +113,7 @@ async function updateOrderStatus(req, res) {
 
 module.exports = {
   listItems,
+  getAvailableAssets,
   getItem,
   purchaseItem,
   getMyOrders,

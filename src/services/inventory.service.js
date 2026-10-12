@@ -10,7 +10,46 @@ const { AppError } = require("../utils/AppError");
 // Mỗi slot tối đa 1 món, việc gỡ món cũ và mặc món mới nằm trong cùng
 // transaction để không bao giờ xảy ra 2 món cùng slot cùng lúc.
 
+function extractItemSlug(imageUrl) {
+  if (!imageUrl || typeof imageUrl !== "string") return null;
+  const match = imageUrl.match(/(?:^|\/)items\/([^/]+?)(?:\.[a-zA-Z0-9]+)?$/);
+  return match ? match[1] : null;
+}
+
 async function listInventory(userId) {
+  if (userId) {
+    // Tự động đồng bộ các đơn hàng đã mua thành công vào Tủ đồ nếu chưa có
+    try {
+      const validOrders = await prisma.shopOrder.findMany({
+        where: {
+          userId,
+          OR: [
+            // Đơn hàng thường: tự động mở vào tủ đồ (miễn là chưa bị hủy)
+            { isSpecial: false, status: { not: "CANCELLED" } },
+            // Đơn hàng đặc biệt: TUYỆT ĐỐI KHÔNG MỞ TỰ ĐỘNG, CHỈ MỞ KHI ADMIN ĐÃ DUYỆT COMPLETED
+            { isSpecial: true, status: "COMPLETED" },
+          ],
+        },
+        include: { item: true },
+      });
+
+      for (const order of validOrders) {
+        if (order.item?.imageUrl) {
+          const slug = extractItemSlug(order.item.imageUrl);
+          if (slug) {
+            await prisma.userItem.upsert({
+              where: { userId_itemId: { userId, itemId: slug } },
+              create: { userId, itemId: slug, equipped: false },
+              update: {},
+            });
+          }
+        }
+      }
+    } catch {
+      // Bỏ qua lỗi đồng bộ nền
+    }
+  }
+
   const rows = await prisma.userItem.findMany({
     where: { userId },
     select: { itemId: true, equipped: true },
@@ -40,8 +79,7 @@ async function assertOwned(userId, itemId) {
   });
 
   if (!owned) {
-    // TEMPORARY: bypass ownership check for testing
-    // throw AppError.forbidden("Bạn chưa nhận được món đồ này nên chưa thể trang bị", { itemId });
+    throw AppError.forbidden("Bạn chưa sở hữu món đồ này. Vui lòng mua tại Cửa hàng để trang bị!", { itemId });
   }
 }
 

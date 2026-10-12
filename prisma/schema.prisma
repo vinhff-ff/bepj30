@@ -244,7 +244,7 @@ model Article {
   title       String   @db.VarChar(255)
   excerpt     String   @db.Text
   content     String   @db.Text
-  coverImage  String?  @db.VarChar(500)
+  coverImage  String?
   category    String   @default("TIN TỨC") @db.VarChar(50)
   author      String   @default("Ban Biên Tập") @db.VarChar(100)
   authorRole  String?  @db.VarChar(100)
@@ -266,6 +266,18 @@ model Article {
   @@index([featured, publishedAt])
   @@index([createdAt])
   @@map("articles")
+}
+
+// Cấu hình trang Fanpage / link-in-bio do admin quản lý. Chỉ có một bản ghi
+// "fanpage"; profile/stats/channels lưu JSON để admin sửa linh hoạt.
+model SocialPageConfig {
+  id        String   @id @default("fanpage")
+  profile   Json     @default("{}")
+  stats     Json     @default("[]")
+  channels  Json     @default("[]")
+  updatedAt DateTime @updatedAt
+
+  @@map("social_page_configs")
 }
 
 // Cấu hình tính năng Đăng nhập nhận xu (Admin có thể On/Off và set xu cho 7 ngày)

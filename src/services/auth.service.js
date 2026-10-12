@@ -124,8 +124,13 @@ async function refreshToken(tokenString) {
     throw AppError.unauthorized("Refresh token đã hết hạn hoặc không hợp lệ", "EXPIRED_REFRESH_TOKEN");
   }
 
+  const userId = decoded.sub || decoded.id || decoded.userId;
+  if (!userId) {
+    throw AppError.unauthorized("Refresh token không hợp lệ", "INVALID_REFRESH_TOKEN");
+  }
+
   const user = await prisma.user.findUnique({
-    where: { id: decoded.sub },
+    where: { id: userId },
     select: USER_PUBLIC_SELECT,
   });
 

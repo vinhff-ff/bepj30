@@ -11,6 +11,7 @@ const levelRoutes = require("./level.routes");
 const articleRoutes = require("./article.routes");
 const dailyRewardRoutes = require("./dailyReward.routes");
 const shopRoutes = require("./shop.routes");
+const socialPageRoutes = require("./socialPage.routes");
 const { sendSuccess } = require("../utils/response");
 
 // Route kiểm tra tình trạng API, không cần token
@@ -30,6 +31,7 @@ router.use("/levels", levelRoutes);
 router.use("/articles", articleRoutes);
 router.use("/daily-rewards", dailyRewardRoutes);
 router.use("/shop", shopRoutes);
+router.use("/social-page", socialPageRoutes);
 
 module.exports = router;
 

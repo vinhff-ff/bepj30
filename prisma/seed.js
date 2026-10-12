@@ -39,17 +39,6 @@ const SEED_LESSONS = [
   },
 ];
 
-// Bài học dạng plugin: file HTML nằm trong public/lab-lessons/<slug>/index.html
-// của frontend, không nhúng html vào DB
-const SEED_LAB_LESSON = {
-  id: "lab-demo-1",
-  name: "Thí nghiệm: nhỏ giọt bằng cử chỉ tay",
-  order: 3,
-  requiredSlots: ["hat", "shirt"],
-  slug: "demo",
-  path: "/lab-lessons/demo/index.html",
-};
-
 function readAsset(fileName) {
   const full = path.join(ASSETS_DIR, fileName);
 
@@ -67,7 +56,7 @@ async function seedLabRoom() {
     ? existing
     : await prisma.room.create({ data: { name: LAB_ROOM_NAME, order: 0 } });
 
-  for (const lesson of [...SEED_LESSONS, SEED_LAB_LESSON]) {
+  for (const lesson of SEED_LESSONS) {
     const html = lesson.htmlAsset ? readAsset(lesson.htmlAsset) : null;
 
     await prisma.lesson.upsert({

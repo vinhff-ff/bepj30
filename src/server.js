@@ -7,8 +7,19 @@ async function bootstrap() {
   await prisma.$connect();
 
   const app = createApp();
-  const server = app.listen(env.port, function onListening() {
-    console.log("[server] API sẵn sàng tại http://localhost:" + env.port + "/api");
+  const host = process.env.HOST || "0.0.0.0";
+  const server = app.listen(env.port, host, function onListening() {
+    console.log("[server] API sẵn sàng tại http://" + host + ":" + env.port + "/api");
+  });
+
+  server.on("error", function onError(err) {
+    if (err.code === "EADDRINUSE") {
+      console.error("[server] Lỗi: Cổng " + env.port + " đang bị chiếm dụng bởi tiến trình khác (EADDRINUSE).");
+      console.error("[server] Để giải phóng cổng, hãy chạy: lsof -ti :" + env.port + " | xargs kill -9");
+    } else {
+      console.error("[server] Lỗi máy chủ:", err);
+    }
+    process.exit(1);
   });
 
   // Đóng kết nối DB sạch trước khi thoát
